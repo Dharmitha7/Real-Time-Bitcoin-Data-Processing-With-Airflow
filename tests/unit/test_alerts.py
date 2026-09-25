@@ -1,3 +1,5 @@
+import json
+
 import responses
 
 from bitcoin_pipeline import alerts
@@ -35,6 +37,8 @@ def test_evaluate_and_alert_triggers_above_threshold(monkeypatch, sample_record)
 
     assert len(triggered) == 1
     assert "1h anomaly" in triggered[0]
+    sent_body = json.loads(responses.calls[0].request.body)
+    assert sent_body["text"].startswith("[PRICE ANOMALY]")
 
 
 def test_evaluate_and_alert_no_trigger_below_threshold(sample_record):
@@ -43,3 +47,22 @@ def test_evaluate_and_alert_no_trigger_below_threshold(sample_record):
     triggered = alerts.evaluate_and_alert(record, threshold=5.0)
 
     assert triggered == []
+
+
+@responses.activate
+def test_dag_failure_slack_callback_sends_ops_alert(monkeypatch):
+    monkeypatch.setenv("SLACK_WEBHOOK_URL", WEBHOOK_URL)
+    responses.add(responses.POST, WEBHOOK_URL, status=200)
+
+    class FakeTaskInstance:
+        task_id = "upload_raw_to_s3"
+        dag_id = "bitcoin_data_pipeline"
+
+    alerts.dag_failure_slack_callback(
+        {"task_instance": FakeTaskInstance(), "run_id": "manual__2026-01-01T00:00:00+00:00"}
+    )
+
+    sent_body = json.loads(responses.calls[0].request.body)
+    assert sent_body["text"].startswith("[OPS ALERT]")
+    assert "upload_raw_to_s3" in sent_body["text"]
+    assert "bitcoin_data_pipeline" in sent_body["text"]

@@ -169,6 +169,23 @@ aws secretsmanager create-secret \
 | [`airflow.example.md`](./airflow.example.md)       | Describes the step-by-step pipeline execution and design rationale         |
 
 
+## Observability
+
+Two kinds of Slack alerts are sent, distinguishable by prefix:
+
+- `[PRICE ANOMALY]` - a genuine 1h/24h price swing beyond the threshold. The data pipeline worked
+  fine; the market moved.
+- `[OPS ALERT]` - a task in the DAG itself failed (via `on_failure_callback`). Something broke and
+  needs attention.
+
+The CoinGecko fetch and the three S3 upload tasks (the network-dependent ones) get 3 retries with
+exponential backoff and a 5-minute timeout; everything else uses the DAG default (2 retries, 10-minute
+timeout).
+
+StatsD metrics are supported but not enabled by default - see the commented-out
+`AIRFLOW__METRICS__STATSD_*` block in `docker-compose.yaml` for how to wire up a `statsd-exporter`
+service and, from there, a Grafana dashboard.
+
 ## CI/CD
 
 `.github/workflows/ci.yml` runs on every push/PR: lint (ruff + black) → unit tests (`tests/unit` +

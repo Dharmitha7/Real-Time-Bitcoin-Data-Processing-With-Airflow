@@ -41,6 +41,21 @@ def evaluate_and_alert(record: dict, threshold: float = 5.0) -> list[str]:
         logger.warning(message)
 
     if triggered:
-        send_slack_alert("\n".join(triggered))
+        send_slack_alert("[PRICE ANOMALY]\n" + "\n".join(triggered))
 
     return triggered
+
+
+def dag_failure_slack_callback(context: dict) -> None:
+    """Airflow on_failure_callback: alert that the pipeline itself broke.
+
+    Uses a distinct [OPS ALERT] prefix so it's never confused with a
+    [PRICE ANOMALY] message - one means "the data looks unusual", the other
+    means "the pipeline stopped working".
+    """
+    ti = context["task_instance"]
+    message = (
+        f"[OPS ALERT] Task '{ti.task_id}' in DAG '{ti.dag_id}' failed "
+        f"(run {context.get('run_id')})."
+    )
+    send_slack_alert(message)

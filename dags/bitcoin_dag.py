@@ -24,6 +24,17 @@ default_args = {
     "retries": 2,
     "retry_delay": timedelta(minutes=5),
     "execution_timeout": timedelta(minutes=10),
+    "on_failure_callback": alerts.dag_failure_slack_callback,
+}
+
+# Network-dependent tasks (the CoinGecko fetch and the three S3 uploads) get
+# more retries with exponential backoff and a tighter timeout than the
+# default, since they're the tasks most likely to hit transient failures.
+_NETWORK_TASK_ARGS = {
+    "retries": 3,
+    "retry_exponential_backoff": True,
+    "max_retry_delay": timedelta(minutes=10),
+    "execution_timeout": timedelta(minutes=5),
 }
 
 
@@ -38,7 +49,7 @@ default_args = {
     tags=["bitcoin", "etl", "stats", "s3", "slack", "archival"],
 )
 def bitcoin_data_pipeline():
-    @task(task_id="fetch_price")
+    @task(task_id="fetch_price", **_NETWORK_TASK_ARGS)
     def fetch_price_task() -> dict:
         return fetch.fetch_bitcoin_price()
 
@@ -54,7 +65,7 @@ def bitcoin_data_pipeline():
     def archive_raw_snapshot_task(raw_path: str) -> str:
         return storage.archive_raw_snapshot(raw_path)
 
-    @task(task_id="upload_archive_to_s3")
+    @task(task_id="upload_archive_to_s3", **_NETWORK_TASK_ARGS)
     def upload_archive_to_s3_task(archive_path: str) -> None:
         if _s3_uploads_skipped():
             return
@@ -63,7 +74,7 @@ def bitcoin_data_pipeline():
         key = storage.build_s3_key("archive", pendulum.now("UTC"), filename)
         storage.upload_to_s3(parquet_path, storage.default_bucket(), key)
 
-    @task(task_id="upload_raw_to_s3")
+    @task(task_id="upload_raw_to_s3", **_NETWORK_TASK_ARGS)
     def upload_raw_to_s3_task(raw_path: str) -> None:
         if _s3_uploads_skipped():
             return
@@ -80,7 +91,7 @@ def bitcoin_data_pipeline():
     def compute_rolling_stats_task(raw_path: str) -> str:
         return storage.compute_rolling_stats(raw_path)
 
-    @task(task_id="upload_processed_to_s3")
+    @task(task_id="upload_processed_to_s3", **_NETWORK_TASK_ARGS)
     def upload_processed_to_s3_task(processed_path: str) -> None:
         if _s3_uploads_skipped():
             return

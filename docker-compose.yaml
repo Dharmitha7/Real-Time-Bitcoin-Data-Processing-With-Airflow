@@ -23,6 +23,13 @@ x-airflow-common-env: &airflow-common-env
   # actually exist under these prefixes.
   AIRFLOW__SECRETS__BACKEND: airflow.providers.amazon.aws.secrets.secrets_manager.SecretsManagerBackend
   AIRFLOW__SECRETS__BACKEND_KWARGS: '{"connections_prefix": "airflow/connections", "variables_prefix": "airflow/variables"}'
+  # Stretch goal, not enabled: Airflow can emit StatsD metrics for a Grafana
+  # dashboard later. Uncomment these and add a statsd-exporter service (e.g.
+  # prom/statsd-exporter) to the services below to wire it up.
+  # AIRFLOW__METRICS__STATSD_ON: "True"
+  # AIRFLOW__METRICS__STATSD_HOST: statsd-exporter
+  # AIRFLOW__METRICS__STATSD_PORT: 8125
+  # AIRFLOW__METRICS__STATSD_PREFIX: airflow
   # AWS credentials come from these env vars (set in .env, never committed),
   # not from a bind-mounted ~/.aws - see README for local setup.
   AWS_ACCESS_KEY_ID: ${AWS_ACCESS_KEY_ID:-}
