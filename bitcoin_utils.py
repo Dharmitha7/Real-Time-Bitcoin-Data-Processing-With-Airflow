@@ -19,8 +19,8 @@ import boto3
 import pandas as pd
 import requests
 from botocore.exceptions import BotoCoreError, ClientError
-from requests.adapters import HTTPAdapter
-from requests.packages.urllib3.util.retry import Retry
+from pydantic import BaseModel, Field, ValidationError
+from tenacity import retry, retry_if_exception_type, stop_after_attempt, wait_exponential
 
 # Logging Setup
 logging.basicConfig(level=logging.INFO)
@@ -32,6 +32,22 @@ PROCESSED_DATA_PATH = os.getenv("BITCOIN_PROCESSED_PATH", "/opt/airflow/data/bit
 ARCHIVE_PATH = os.getenv("BITCOIN_ARCHIVE_PATH", "/opt/airflow/data/archive")
 
 SLACK_WEBHOOK_URL = os.getenv("SLACK_WEBHOOK_URL")
+COINGECKO_API_KEY = os.getenv("COINGECKO_API_KEY")
+
+COINGECKO_URL = (
+    "https://api.coingecko.com/api/v3/simple/price"
+    "?ids=bitcoin&vs_currencies=usd&include_24hr_change=true&include_1hr_change=true"
+)
+
+
+class BitcoinPrice(BaseModel):
+    usd: float = Field(gt=0)
+    usd_1h_change: float | None = None
+    usd_24h_change: float | None = None
+
+
+class CoinGeckoResponse(BaseModel):
+    bitcoin: BitcoinPrice
 
 
 # Function: Send Slack alert
@@ -49,27 +65,36 @@ def send_slack_alert(message):
         logger.error(f"Slack notification error: {e}")
 
 
-#  Fetch real-time Bitcoin price from CoinGecko API
-def fetch_bitcoin_price():
-    url = (
-        "https://api.coingecko.com/api/v3/simple/price?ids=bitcoin&vs_currencies=usd"
-        "&include_24hr_change=true&include_1hr_change=true"
-    )
-    session = requests.Session()
-    retry = Retry(total=3, backoff_factor=1, status_forcelist=[429, 500, 502, 503, 504])
-    adapter = HTTPAdapter(max_retries=retry)
-    session.mount("https://", adapter)
-
-    response = session.get(url)
+@retry(
+    retry=retry_if_exception_type(requests.exceptions.RequestException),
+    stop=stop_after_attempt(5),
+    wait=wait_exponential(multiplier=1, min=1, max=30),
+    reraise=True,
+)
+def _get_coingecko_price(api_key):
+    headers = {"x-cg-demo-api-key": api_key} if api_key else {}
+    response = requests.get(COINGECKO_URL, headers=headers, timeout=10)
     response.raise_for_status()
-    price_data = response.json()
+    return response.json()
+
+
+# Fetch real-time Bitcoin price from CoinGecko API
+def fetch_bitcoin_price(api_key=None):
+    api_key = api_key if api_key is not None else COINGECKO_API_KEY
+    raw_data = _get_coingecko_price(api_key)
+
+    try:
+        parsed = CoinGeckoResponse.model_validate(raw_data)
+    except ValidationError:
+        logger.error(f"Unexpected CoinGecko response shape: {raw_data}")
+        raise
 
     logger.info("Fetched Bitcoin price successfully.")
     return {
         "timestamp": datetime.utcnow().isoformat(),
-        "price_usd": price_data["bitcoin"]["usd"],
-        "change_1h": price_data["bitcoin"].get("usd_1h_change"),
-        "change_24h": price_data["bitcoin"].get("usd_24h_change"),
+        "price_usd": parsed.bitcoin.usd,
+        "change_1h": parsed.bitcoin.usd_1h_change,
+        "change_24h": parsed.bitcoin.usd_24h_change,
     }
 
 
