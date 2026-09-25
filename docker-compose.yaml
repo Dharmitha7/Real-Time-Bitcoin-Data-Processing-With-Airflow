@@ -12,12 +12,23 @@ x-airflow-common-env: &airflow-common-env
   AIRFLOW__CORE__DAGS_FOLDER: /opt/airflow/dags
   AIRFLOW__CORE__LOAD_EXAMPLES: "False"
   SLACK_WEBHOOK_URL: ${SLACK_WEBHOOK_URL}
+  # Read Airflow Connections/Variables from AWS Secrets Manager instead of
+  # (or in addition to) the metastore. Falls through to other backends if a
+  # given key isn't found there, so this is safe to enable before any secrets
+  # actually exist under these prefixes.
+  AIRFLOW__SECRETS__BACKEND: airflow.providers.amazon.aws.secrets.secrets_manager.SecretsManagerBackend
+  AIRFLOW__SECRETS__BACKEND_KWARGS: '{"connections_prefix": "airflow/connections", "variables_prefix": "airflow/variables"}'
+  # AWS credentials come from these env vars (set in .env, never committed),
+  # not from a bind-mounted ~/.aws - see README for local setup.
+  AWS_ACCESS_KEY_ID: ${AWS_ACCESS_KEY_ID:-}
+  AWS_SECRET_ACCESS_KEY: ${AWS_SECRET_ACCESS_KEY:-}
+  AWS_SESSION_TOKEN: ${AWS_SESSION_TOKEN:-}
+  AWS_DEFAULT_REGION: ${AWS_DEFAULT_REGION:-us-east-1}
 
 x-airflow-common-volumes: &airflow-common-volumes
   - ./dags:/opt/airflow/dags
   - ./data:/opt/airflow/data
   - ./bitcoin_utils.py:/opt/airflow/bitcoin_utils.py
-  - ${USERPROFILE}/.aws:/home/airflow/.aws
 
 services:
   postgres:
@@ -54,6 +65,13 @@ services:
       - -c
       - |
         mkdir -p /opt/airflow/logs /opt/airflow/dags /opt/airflow/plugins
+        if [ -z "$${_AIRFLOW_WWW_USER_PASSWORD}" ]; then
+          export _AIRFLOW_WWW_USER_PASSWORD=$$(python -c "import secrets; print(secrets.token_urlsafe(18))")
+          echo "No AIRFLOW_ADMIN_PASSWORD set - generated a random admin password:"
+          echo "  $${_AIRFLOW_WWW_USER_PASSWORD}"
+          echo "Save it now; it will not be shown again. To rotate later, run:"
+          echo "  docker compose exec airflow-api-server airflow users reset-password --username $${_AIRFLOW_WWW_USER_USERNAME}"
+        fi
         exec /entrypoint airflow version
 
   airflow-api-server:

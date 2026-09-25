@@ -74,16 +74,18 @@ The pipeline produces versioned artifacts locally (via Docker volume mounts) and
 docker-compose up --build
 ```
 
-Wait for containers to initialize, especially `airflow-init` and `airflow-webserver`.
+Wait for containers to initialize, especially `airflow-init` (runs DB migration and creates the
+admin user) and `airflow-api-server`.
 
 ### 2. Access Airflow UI
 
 * Go to: [http://localhost:8080](http://localhost:8080)
-* Login with:
+* Login with the username from `AIRFLOW_ADMIN_USERNAME` in your `.env` (default `admin`) and its
+  password. If you left `AIRFLOW_ADMIN_PASSWORD` blank, a random password was generated for you —
+  find it with `docker compose logs airflow-init`. To rotate it later:
 
-  ```
-  Username: admin
-  Password: admin
+  ```bash
+  docker compose exec airflow-api-server airflow users reset-password --username admin
   ```
 * Trigger the DAG: `bitcoin_data_pipeline`
 
@@ -130,44 +132,30 @@ export SLACK_WEBHOOK_URL="https://hooks.slack.com/services/..."
 
 ###  Environment Variables with `.env` File
 
-To avoid exposing secrets (like Slack webhooks or AWS credentials) in your code or version control, you can define them in a `.env` file:
-
-#### Sample `.env` file:
-
-```env
-SLACK_WEBHOOK_URL=https://hooks.slack.com/services/your/token/here
-```
-
-Make sure to place this file **in your project root directory**, and update your `docker-compose.yaml` to include:
-
-```yaml
-env_file:
-  - .env
-```
-
-For example, inside `airflow-webserver`, `airflow-scheduler`, and `airflow-init` services:
-
-```yaml
-services:
-  airflow-webserver:
-    ...
-    env_file:
-      - .env
-```
+To avoid exposing secrets (like Slack webhooks or AWS credentials) in your code or version
+control, define them in a `.env` file in the project root — copy `.env.example` to `.env` and fill
+in real values. `docker-compose.yaml` already reads it automatically (Compose's built-in `.env`
+substitution) for every service; there's nothing extra to wire up.
 
 
 ##  AWS S3 Access
 
-* Ensure your AWS credentials are located in:
+Containers authenticate to AWS using environment variables set in your `.env` file
+(`AWS_ACCESS_KEY_ID`, `AWS_SECRET_ACCESS_KEY`, `AWS_SESSION_TOKEN`, `AWS_DEFAULT_REGION`) — not a
+mounted `~/.aws` directory. Use short-lived credentials where possible, and never commit `.env`.
 
-  ```
-  ~/.aws/credentials
-  ```
-* These credentials are mounted automatically via:
+Airflow is also configured with the
+[`SecretsManagerBackend`](https://airflow.apache.org/docs/apache-airflow-providers-amazon/stable/secrets-backends/aws-secrets-manager.html)
+so Connections/Variables can be resolved from AWS Secrets Manager under the `airflow/connections/*`
+and `airflow/variables/*` prefixes (falling back to `.env`/the metastore if a key isn't found
+there). To move the Slack webhook there once you have AWS access:
 
-  ```yaml
-  - ${USERPROFILE}/.aws:/home/airflow/.aws
-  ```
+```bash
+aws secretsmanager create-secret \
+  --profile <your-profile> \
+  --name airflow/variables/slack_webhook_url \
+  --secret-string "<your-slack-webhook-url>"
+```
 
 ##  Documentation
 

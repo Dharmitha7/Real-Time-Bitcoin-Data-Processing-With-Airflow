@@ -2,3 +2,5 @@ pandas>=2.2,<3.0
 numpy>=1.26,<3.0
 requests>=2.32,<3.0
 boto3>=1.35,<2.0
+# Provides the SecretsManagerBackend used for Airflow Connections/Variables.
+apache-airflow-providers-amazon>=9.0,<10.0
