@@ -161,13 +161,34 @@ aws secretsmanager create-secret \
 
 | File                                               | Description                                                                 |
 |----------------------------------------------------|-----------------------------------------------------------------------------|
-| [`bitcoin_utils.py`](./bitcoin_utils.py)           | Modular utility functions: fetch, alert, archive, upload                   |
+| [`bitcoin_pipeline/`](./bitcoin_pipeline)          | Package: fetch (CoinGecko + retries), alerts (Slack), storage (CSV/S3), quality (Pandera checks) |
 | [`bitcoin_dag.py`](./dags/bitcoin_dag.py)          | Apache Airflow DAG that orchestrates the full ETL pipeline                 |
 | [`airflow.API.ipynb`](./airflow.API.ipynb)         | Tool demonstration notebook — showcases how utility functions behave       |
 | [`airflow.API.md`](./airflow.API.md)               | Explains each utility function's internal logic and expected behavior      |
 | [`airflow.example.ipynb`](./airflow.example.ipynb) | Full project demo notebook — simulates the entire DAG workflow manually    |
 | [`airflow.example.md`](./airflow.example.md)       | Describes the step-by-step pipeline execution and design rationale         |
 
+
+## CI/CD
+
+`.github/workflows/ci.yml` runs on every push/PR: lint (ruff + black) → unit tests (`tests/unit` +
+the DAG integrity check in `tests/dags`) → a docker build. `.github/workflows/deploy.yml` runs on
+push to `main`: builds and pushes the image to GHCR, then brings the stack up in the runner and
+triggers a real DAG run as a smoke test (with `BITCOIN_PIPELINE_SKIP_S3=true`, so it doesn't need
+AWS credentials as a GitHub secret).
+
+To enable `deploy.yml`'s smoke test, add these repo secrets (Settings → Secrets and variables →
+Actions) - throwaway values used only to bring the stack up in CI, not your real deployment's
+secrets:
+
+- `SMOKE_TEST_POSTGRES_PASSWORD`
+- `SMOKE_TEST_FERNET_KEY`
+- `SMOKE_TEST_API_SECRET_KEY`
+- `SMOKE_TEST_JWT_SECRET`
+- `SMOKE_TEST_ADMIN_PASSWORD`
+
+Until those are added, `deploy.yml` will fail at the "Write .env" step with empty values - `ci.yml`
+does not need any secrets and works as soon as it's pushed.
 
 ## Limitations & Next Steps
 

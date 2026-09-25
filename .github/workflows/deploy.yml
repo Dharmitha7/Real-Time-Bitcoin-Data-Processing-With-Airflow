@@ -1,0 +1,103 @@
+name: Deploy
+
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+env:
+  IMAGE_NAME: ghcr.io/${{ github.repository }}
+
+jobs:
+  build-and-push:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      packages: write
+    steps:
+      - uses: actions/checkout@v4
+      - uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+      - uses: docker/build-push-action@v6
+        with:
+          context: .
+          push: true
+          tags: |
+            ${{ env.IMAGE_NAME }}:${{ github.sha }}
+            ${{ env.IMAGE_NAME }}:latest
+
+  smoke-test:
+    needs: build-and-push
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Write .env for the smoke test
+        run: |
+          cat <<EOF > .env
+          POSTGRES_USER=airflow
+          POSTGRES_PASSWORD=${{ secrets.SMOKE_TEST_POSTGRES_PASSWORD }}
+          AIRFLOW__DATABASE__SQL_ALCHEMY_CONN=postgresql+psycopg2://airflow:${{ secrets.SMOKE_TEST_POSTGRES_PASSWORD }}@postgres/airflow
+          AIRFLOW__CORE__FERNET_KEY=${{ secrets.SMOKE_TEST_FERNET_KEY }}
+          AIRFLOW__API__SECRET_KEY=${{ secrets.SMOKE_TEST_API_SECRET_KEY }}
+          AIRFLOW__API_AUTH__JWT_SECRET=${{ secrets.SMOKE_TEST_JWT_SECRET }}
+          AIRFLOW_ADMIN_USERNAME=admin
+          AIRFLOW_ADMIN_PASSWORD=${{ secrets.SMOKE_TEST_ADMIN_PASSWORD }}
+          AIRFLOW_ADMIN_EMAIL=admin@example.com
+          SLACK_WEBHOOK_URL=
+          COINGECKO_API_KEY=
+          AWS_DEFAULT_REGION=us-east-1
+          BITCOIN_S3_BUCKET=unused-in-ci
+          BITCOIN_PIPELINE_SKIP_S3=true
+          EOF
+        # These SMOKE_TEST_* secrets are throwaway values used only to bring
+        # the stack up in the runner - they are not the real deployment's
+        # secrets. Skipping S3 uploads means no AWS credentials are needed
+        # here at all; see README for adding them once ready.
+
+      - name: Bring up the stack
+        run: docker compose up -d --build
+
+      - name: Wait for the API server to be healthy
+        run: |
+          for i in $(seq 1 30); do
+            if curl -sf http://localhost:8080/api/v2/monitor/health > /dev/null; then
+              echo "API server healthy"
+              exit 0
+            fi
+            sleep 10
+          done
+          echo "API server never became healthy" >&2
+          docker compose logs
+          exit 1
+
+      - name: Trigger the DAG and wait for it to finish
+        run: |
+          docker compose exec -T airflow-scheduler airflow dags unpause bitcoin_data_pipeline
+
+          run_id=$(docker compose exec -T airflow-scheduler airflow dags trigger bitcoin_data_pipeline -o json \
+            | python3 -c "import sys, json; print(json.load(sys.stdin)[0]['dag_run_id'])")
+          echo "Triggered run: $run_id"
+
+          state="queued"
+          for i in $(seq 1 30); do
+            state=$(docker compose exec -T airflow-scheduler airflow dags list-runs bitcoin_data_pipeline -o json \
+              | python3 -c "import sys, json; runs=json.load(sys.stdin); print(next(r['state'] for r in runs if r['run_id']=='$run_id'))")
+            echo "DAG run state: $state"
+            if [ "$state" = "success" ] || [ "$state" = "failed" ]; then
+              break
+            fi
+            sleep 10
+          done
+
+          if [ "$state" != "success" ]; then
+            docker compose logs airflow-scheduler
+            exit 1
+          fi
+
+      - name: Tear down
+        if: always()
+        run: docker compose down -v

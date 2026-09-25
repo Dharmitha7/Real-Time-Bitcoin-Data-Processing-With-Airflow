@@ -5,6 +5,10 @@ on:
   pull_request:
     branches: [main]
 
+env:
+  PYTHON_VERSION: "3.11"
+  AIRFLOW_VERSION: "3.3.2"
+
 jobs:
   lint:
     runs-on: ubuntu-latest
@@ -12,7 +16,29 @@ jobs:
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5
         with:
-          python-version: "3.11"
+          python-version: ${{ env.PYTHON_VERSION }}
       - run: pip install -e .[dev]
       - run: ruff check .
       - run: black --check .
+
+  unit-test:
+    needs: lint
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: ${{ env.PYTHON_VERSION }}
+      - run: pip install -e .[dev]
+      - name: Install Airflow (for the DAG integrity tests)
+        run: |
+          pip install "apache-airflow==${{ env.AIRFLOW_VERSION }}" \
+            --constraint "https://raw.githubusercontent.com/apache/airflow/constraints-${{ env.AIRFLOW_VERSION }}/constraints-${{ env.PYTHON_VERSION }}.txt"
+      - run: pytest tests/unit tests/dags --cov=bitcoin_pipeline -q
+
+  build:
+    needs: unit-test
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - run: docker build -t bitcoin-pipeline:ci .
