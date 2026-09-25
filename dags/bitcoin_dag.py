@@ -58,14 +58,18 @@ def bitcoin_data_pipeline():
     def upload_archive_to_s3_task(archive_path: str) -> None:
         if _s3_uploads_skipped():
             return
-        filename = archive_path.rsplit("/", 1)[-1]
-        storage.upload_to_s3(archive_path, storage.default_bucket(), f"archive/{filename}")
+        parquet_path = storage.write_parquet(archive_path, archive_path.replace(".csv", ".parquet"))
+        filename = parquet_path.rsplit("/", 1)[-1]
+        key = storage.build_s3_key("archive", pendulum.now("UTC"), filename)
+        storage.upload_to_s3(parquet_path, storage.default_bucket(), key)
 
     @task(task_id="upload_raw_to_s3")
     def upload_raw_to_s3_task(raw_path: str) -> None:
         if _s3_uploads_skipped():
             return
-        storage.upload_to_s3(raw_path, storage.default_bucket(), "raw/bitcoin_raw.csv")
+        parquet_path = storage.write_parquet(raw_path, raw_path.replace(".csv", ".parquet"))
+        key = storage.build_s3_key("raw", pendulum.now("UTC"), "bitcoin_raw.parquet")
+        storage.upload_to_s3(parquet_path, storage.default_bucket(), key)
 
     @task(task_id="run_quality_checks")
     def run_quality_checks_task(raw_path: str) -> str:
@@ -80,9 +84,11 @@ def bitcoin_data_pipeline():
     def upload_processed_to_s3_task(processed_path: str) -> None:
         if _s3_uploads_skipped():
             return
-        storage.upload_to_s3(
-            processed_path, storage.default_bucket(), "processed/bitcoin_processed.csv"
+        parquet_path = storage.write_parquet(
+            processed_path, processed_path.replace(".csv", ".parquet")
         )
+        key = storage.build_s3_key("processed", pendulum.now("UTC"), "bitcoin_processed.parquet")
+        storage.upload_to_s3(parquet_path, storage.default_bucket(), key)
 
     price_record = fetch_price_task()
     raw_path = append_raw_csv_task(price_record)

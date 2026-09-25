@@ -112,3 +112,18 @@ def test_build_s3_key_partitions_by_date_and_hour():
     key = storage.build_s3_key("raw", dt, "bitcoin_raw.parquet")
 
     assert key == "raw/dt=2026-09-25/hour=14/bitcoin_raw.parquet"
+
+
+def test_write_parquet_round_trips_data(tmp_path):
+    csv_path = tmp_path / "raw.csv"
+    parquet_path = tmp_path / "raw.parquet"
+    pd.DataFrame({"price_usd": [100.0, 200.0], "change_1h": [1.0, -1.0]}).to_csv(
+        csv_path, index=False
+    )
+
+    result = storage.write_parquet(str(csv_path), str(parquet_path))
+
+    assert result == str(parquet_path)
+    assert os.path.exists(parquet_path)
+    out = pd.read_parquet(parquet_path)
+    assert list(out["price_usd"]) == [100.0, 200.0]

@@ -80,3 +80,11 @@ def archive_raw_snapshot(raw_path: str = RAW_DATA_PATH, archive_dir: str = ARCHI
 def build_s3_key(prefix: str, dt: datetime, filename: str) -> str:
     """Build a dt=/hour= partitioned S3 key, e.g. raw/dt=2026-09-25/hour=14/bitcoin_raw.parquet."""
     return f"{prefix}/dt={dt:%Y-%m-%d}/hour={dt:%H}/{filename}"
+
+
+def write_parquet(csv_path: str, parquet_path: str) -> str:
+    """Convert a CSV file to Parquet at parquet_path and return that path."""
+    df = pd.read_csv(csv_path)
+    df.to_parquet(parquet_path, index=False)
+    logger.info(f"Wrote Parquet copy of {csv_path} to {parquet_path}")
+    return parquet_path
