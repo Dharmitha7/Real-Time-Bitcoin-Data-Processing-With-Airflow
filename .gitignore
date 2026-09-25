@@ -9,7 +9,10 @@ dist/
 build/
 
 data/*.csv
+data/*.parquet
 data/archive/
+
+.claude/settings.local.json
 
 infra/terraform/.terraform/
 infra/terraform/*.tfstate
