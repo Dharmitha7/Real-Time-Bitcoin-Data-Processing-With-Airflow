@@ -1,4 +1,23 @@
-version: '3'
+x-airflow-common-env: &airflow-common-env
+  AIRFLOW__CORE__EXECUTOR: LocalExecutor
+  AIRFLOW__CORE__AUTH_MANAGER: airflow.providers.fab.auth_manager.fab_auth_manager.FabAuthManager
+  AIRFLOW__DATABASE__SQL_ALCHEMY_CONN: ${AIRFLOW__DATABASE__SQL_ALCHEMY_CONN}
+  AIRFLOW__CORE__FERNET_KEY: ${AIRFLOW__CORE__FERNET_KEY}
+  AIRFLOW__API__SECRET_KEY: ${AIRFLOW__API__SECRET_KEY}
+  # Airflow 3 tasks talk to the API server over HTTP (the "execution API")
+  # instead of hitting the metadata DB directly, so both a JWT secret and the
+  # server's internal URL are required even for a single-node LocalExecutor setup.
+  AIRFLOW__API_AUTH__JWT_SECRET: ${AIRFLOW__API_AUTH__JWT_SECRET}
+  AIRFLOW__CORE__EXECUTION_API_SERVER_URL: http://airflow-api-server:8080/execution/
+  AIRFLOW__CORE__DAGS_FOLDER: /opt/airflow/dags
+  AIRFLOW__CORE__LOAD_EXAMPLES: "False"
+  SLACK_WEBHOOK_URL: ${SLACK_WEBHOOK_URL}
+
+x-airflow-common-volumes: &airflow-common-volumes
+  - ./dags:/opt/airflow/dags
+  - ./data:/opt/airflow/data
+  - ./bitcoin_utils.py:/opt/airflow/bitcoin_utils.py
+  - ${USERPROFILE}/.aws:/home/airflow/.aws
 
 services:
   postgres:
@@ -9,61 +28,89 @@ services:
       POSTGRES_DB: airflow
     volumes:
       - postgres-db-volume:/var/lib/postgresql/data
-
-  airflow-webserver:
-    image: apache/airflow:2.7.3
-    depends_on:
-      - postgres
-    environment:
-      AIRFLOW__CORE__EXECUTOR: LocalExecutor
-      AIRFLOW__DATABASE__SQL_ALCHEMY_CONN: ${AIRFLOW__DATABASE__SQL_ALCHEMY_CONN}
-      AIRFLOW__CORE__FERNET_KEY: ${AIRFLOW__CORE__FERNET_KEY}
-      AIRFLOW__WEBSERVER__SECRET_KEY: ${AIRFLOW__WEBSERVER__SECRET_KEY}
-      AIRFLOW__CORE__DAGS_FOLDER: /opt/airflow/dags
-      AIRFLOW__CORE__LOAD_EXAMPLES: "False"
-      SLACK_WEBHOOK_URL: ${SLACK_WEBHOOK_URL}
-    volumes:
-      - ./dags:/opt/airflow/dags
-      - ./data:/opt/airflow/data
-      - ./bitcoin_utils.py:/opt/airflow/bitcoin_utils.py
-      - ${USERPROFILE}/.aws:/home/airflow/.aws
-    ports:
-      - "8080:8080"
-    command: webserver
-
-  airflow-scheduler:
-    image: apache/airflow:2.7.3
-    depends_on:
-      - airflow-webserver
-    environment:
-      AIRFLOW__CORE__EXECUTOR: LocalExecutor
-      AIRFLOW__DATABASE__SQL_ALCHEMY_CONN: ${AIRFLOW__DATABASE__SQL_ALCHEMY_CONN}
-      AIRFLOW__WEBSERVER__SECRET_KEY: ${AIRFLOW__WEBSERVER__SECRET_KEY}
-      AIRFLOW__CORE__LOAD_EXAMPLES: "False"
-      SLACK_WEBHOOK_URL: ${SLACK_WEBHOOK_URL}
-    volumes:
-      - ./dags:/opt/airflow/dags
-      - ./data:/opt/airflow/data
-      - ./bitcoin_utils.py:/opt/airflow/bitcoin_utils.py
-      - ${USERPROFILE}/.aws:/home/airflow/.aws
-    command: scheduler
+    healthcheck:
+      test: ["CMD", "pg_isready", "-U", "${POSTGRES_USER}"]
+      interval: 10s
+      retries: 5
+      start_period: 5s
 
   airflow-init:
-    image: apache/airflow:2.7.3
+    build: .
     depends_on:
-      - postgres
+      postgres:
+        condition: service_healthy
     environment:
-      AIRFLOW__CORE__EXECUTOR: LocalExecutor
-      AIRFLOW__DATABASE__SQL_ALCHEMY_CONN: ${AIRFLOW__DATABASE__SQL_ALCHEMY_CONN}
-      AIRFLOW__WEBSERVER__SECRET_KEY: ${AIRFLOW__WEBSERVER__SECRET_KEY}
-      AIRFLOW__CORE__LOAD_EXAMPLES: "False"
-      SLACK_WEBHOOK_URL: ${SLACK_WEBHOOK_URL}
-      AIRFLOW_ADMIN_USERNAME: ${AIRFLOW_ADMIN_USERNAME}
-      AIRFLOW_ADMIN_PASSWORD: ${AIRFLOW_ADMIN_PASSWORD}
-      AIRFLOW_ADMIN_EMAIL: ${AIRFLOW_ADMIN_EMAIL}
-    volumes:
-      - ${USERPROFILE}/.aws:/home/airflow/.aws
-    command: bash -c "airflow db init && airflow users create --username ${AIRFLOW_ADMIN_USERNAME} --password ${AIRFLOW_ADMIN_PASSWORD} --firstname admin --lastname admin --role Admin --email ${AIRFLOW_ADMIN_EMAIL}"
+      <<: *airflow-common-env
+      _AIRFLOW_DB_MIGRATE: "true"
+      _AIRFLOW_WWW_USER_CREATE: "true"
+      _AIRFLOW_WWW_USER_USERNAME: ${AIRFLOW_ADMIN_USERNAME}
+      _AIRFLOW_WWW_USER_PASSWORD: ${AIRFLOW_ADMIN_PASSWORD}
+      _AIRFLOW_WWW_USER_FIRSTNAME: admin
+      _AIRFLOW_WWW_USER_LASTNAME: admin
+      _AIRFLOW_WWW_USER_EMAIL: ${AIRFLOW_ADMIN_EMAIL}
+    volumes: *airflow-common-volumes
+    entrypoint: /bin/bash
+    command:
+      - -c
+      - |
+        mkdir -p /opt/airflow/logs /opt/airflow/dags /opt/airflow/plugins
+        exec /entrypoint airflow version
+
+  airflow-api-server:
+    build: .
+    depends_on:
+      postgres:
+        condition: service_healthy
+      airflow-init:
+        condition: service_completed_successfully
+    environment: *airflow-common-env
+    volumes: *airflow-common-volumes
+    ports:
+      - "8080:8080"
+    command: api-server
+    healthcheck:
+      test: ["CMD", "curl", "--fail", "http://localhost:8080/api/v2/monitor/health"]
+      interval: 30s
+      timeout: 10s
+      retries: 5
+      start_period: 30s
+
+  airflow-scheduler:
+    build: .
+    depends_on:
+      postgres:
+        condition: service_healthy
+      airflow-init:
+        condition: service_completed_successfully
+    environment: *airflow-common-env
+    volumes: *airflow-common-volumes
+    command: scheduler
+    healthcheck:
+      test: ["CMD-SHELL", 'airflow jobs check --job-type SchedulerJob --hostname "$${HOSTNAME}"']
+      interval: 30s
+      timeout: 10s
+      retries: 5
+      start_period: 30s
+
+  # Airflow 3 splits DAG parsing out of the scheduler into its own required
+  # process, even for a single-node/local setup - it no longer runs implicitly
+  # inside the scheduler as it did in Airflow 2.x.
+  airflow-dag-processor:
+    build: .
+    depends_on:
+      postgres:
+        condition: service_healthy
+      airflow-init:
+        condition: service_completed_successfully
+    environment: *airflow-common-env
+    volumes: *airflow-common-volumes
+    command: dag-processor
+    healthcheck:
+      test: ["CMD-SHELL", 'airflow jobs check --job-type DagProcessorJob --hostname "$${HOSTNAME}"']
+      interval: 30s
+      timeout: 10s
+      retries: 5
+      start_period: 30s
 
 volumes:
   postgres-db-volume:
