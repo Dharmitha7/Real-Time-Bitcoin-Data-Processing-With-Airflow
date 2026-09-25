@@ -1,4 +1,4 @@
-'''
+"""
 This file contains utility functions that support the Bitcoin Data Pipeline project.
 
 Core functionalities:
@@ -9,18 +9,18 @@ Core functionalities:
 - Slack alerts for anomalies
 - Archival utilities for old CSV snapshots
 
-'''
+"""
 
-import requests
+import logging
+import os
+from datetime import datetime
+
 import boto3
 import pandas as pd
-import numpy as np
-from datetime import datetime
-import os
-import logging
+import requests
+from botocore.exceptions import BotoCoreError, ClientError
 from requests.adapters import HTTPAdapter
 from requests.packages.urllib3.util.retry import Retry
-from botocore.exceptions import BotoCoreError, ClientError
 
 # Logging Setup
 logging.basicConfig(level=logging.INFO)
@@ -32,6 +32,7 @@ PROCESSED_DATA_PATH = os.getenv("BITCOIN_PROCESSED_PATH", "/opt/airflow/data/bit
 ARCHIVE_PATH = os.getenv("BITCOIN_ARCHIVE_PATH", "/opt/airflow/data/archive")
 
 SLACK_WEBHOOK_URL = os.getenv("SLACK_WEBHOOK_URL")
+
 
 # Function: Send Slack alert
 def send_slack_alert(message):
@@ -47,6 +48,7 @@ def send_slack_alert(message):
     except Exception as e:
         logger.error(f"Slack notification error: {e}")
 
+
 #  Fetch real-time Bitcoin price from CoinGecko API
 def fetch_bitcoin_price():
     url = (
@@ -56,7 +58,7 @@ def fetch_bitcoin_price():
     session = requests.Session()
     retry = Retry(total=3, backoff_factor=1, status_forcelist=[429, 500, 502, 503, 504])
     adapter = HTTPAdapter(max_retries=retry)
-    session.mount('https://', adapter)
+    session.mount("https://", adapter)
 
     response = session.get(url)
     response.raise_for_status()
@@ -69,6 +71,7 @@ def fetch_bitcoin_price():
         "change_1h": price_data["bitcoin"].get("usd_1h_change"),
         "change_24h": price_data["bitcoin"].get("usd_24h_change"),
     }
+
 
 # Save fetched price to CSV and upload raw to S3
 def save_price_to_csv(threshold=5):
@@ -102,11 +105,12 @@ def save_price_to_csv(threshold=5):
     logger.info(f"Saved price to {RAW_DATA_PATH}")
 
     try:
-        s3 = boto3.client('s3')
-        s3.upload_file(RAW_DATA_PATH, 'bitcoin-price-store', 'raw/bitcoin_raw.csv')
+        s3 = boto3.client("s3")
+        s3.upload_file(RAW_DATA_PATH, "bitcoin-price-store", "raw/bitcoin_raw.csv")
         logger.info("Uploaded raw CSV to s3://bitcoin-price-store/raw/bitcoin_raw.csv")
     except (BotoCoreError, ClientError) as e:
         logger.error(f"Raw S3 upload failed: {e}")
+
 
 # Compute rolling stats and upload processed CSV to S3
 def compute_moving_average(window=2):
@@ -115,33 +119,39 @@ def compute_moving_average(window=2):
         return
 
     df = pd.read_csv(RAW_DATA_PATH)
-    if 'price_usd' not in df.columns:
+    if "price_usd" not in df.columns:
         logger.error("Missing 'price_usd' column in data.")
         return
 
-    df['price_ma'] = df['price_usd'].rolling(window=window).mean()
-    df['price_std'] = df['price_usd'].rolling(window=window).std()
+    df["price_ma"] = df["price_usd"].rolling(window=window).mean()
+    df["price_std"] = df["price_usd"].rolling(window=window).std()
 
     df.to_csv(PROCESSED_DATA_PATH, index=False)
     logger.info(f"Processed data saved to {PROCESSED_DATA_PATH}")
 
     try:
-        s3 = boto3.client('s3')
-        s3.upload_file(PROCESSED_DATA_PATH, 'bitcoin-price-store', 'processed/bitcoin_processed.csv')
-        logger.info("Uploaded processed CSV to s3://bitcoin-price-store/processed/bitcoin_processed.csv")
+        s3 = boto3.client("s3")
+        s3.upload_file(
+            PROCESSED_DATA_PATH, "bitcoin-price-store", "processed/bitcoin_processed.csv"
+        )
+        logger.info(
+            "Uploaded processed CSV to s3://bitcoin-price-store/processed/bitcoin_processed.csv"
+        )
     except Exception as e:
         logger.warning(f"Processed CSV upload failed: {e}")
+
 
 # Manual S3 upload utility
 def upload_to_s3(bucket_name, key_path):
     try:
         logger.info("Uploading to S3...")
-        s3 = boto3.client('s3')
+        s3 = boto3.client("s3")
         s3.upload_file(PROCESSED_DATA_PATH, bucket_name, key_path)
         logger.info(f"Uploaded to s3://{bucket_name}/{key_path}")
     except (BotoCoreError, ClientError, FileNotFoundError) as e:
         logger.error(f"Upload failed: {e}")
         raise
+
 
 # Archive snapshot copy of raw file
 def archive_raw_snapshot():
@@ -159,8 +169,12 @@ def archive_raw_snapshot():
     logger.info(f"Archived raw snapshot to {archive_file}")
 
     try:
-        s3 = boto3.client('s3')
-        s3.upload_file(archive_file, 'bitcoin-price-store', f"archive/{os.path.basename(archive_file)}")
-        logger.info(f"Uploaded archive snapshot to S3: s3://bitcoin-price-store/archive/{os.path.basename(archive_file)}")
+        s3 = boto3.client("s3")
+        s3.upload_file(
+            archive_file, "bitcoin-price-store", f"archive/{os.path.basename(archive_file)}"
+        )
+        logger.info(
+            f"Uploaded archive snapshot to S3: s3://bitcoin-price-store/archive/{os.path.basename(archive_file)}"
+        )
     except Exception as e:
         logger.warning(f"Archive snapshot upload failed: {e}")
