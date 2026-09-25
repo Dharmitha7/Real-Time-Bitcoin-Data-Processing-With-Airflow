@@ -20,10 +20,37 @@ This project addresses these challenges by designing a production-style pipeline
 
 ## Architecture
 
-**Dataflow:** CoinGecko API → Airflow DAG → Raw CSV + Snapshot Archive → Rolling Stats → Slack Alerts → S3 (raw + processed)
-> _Architecture diagram / Airflow DAG graph will be added._
-- **Orchestration:** Airflow schedules and runs ingestion + processing as separate tasks for reliability and traceability.
-- **Storage:** Raw and processed artifacts are written locally and synced to S3 for durable retention.
+```mermaid
+flowchart LR
+    CG[CoinGecko API] --> FETCH[fetch_price]
+    FETCH --> ALERT[evaluate_and_alert]
+    ALERT --> SLACK1[/Slack: PRICE ANOMALY/]
+    FETCH --> APPEND[append_raw_csv]
+
+    APPEND --> ARCHIVE[archive_raw_snapshot]
+    ARCHIVE --> UPARCH[upload_archive_to_s3]
+    UPARCH --> S3ARCH[(S3: archive/)]
+
+    APPEND --> UPRAW[upload_raw_to_s3]
+    UPRAW --> S3RAW[(S3: raw/, partitioned)]
+
+    APPEND --> QUALITY[run_quality_checks]
+    QUALITY --> STATS[compute_rolling_stats]
+    STATS --> UPPROC[upload_processed_to_s3]
+    UPPROC --> S3PROC[(S3: processed/, partitioned)]
+    S3PROC --> GLUE[Glue Catalog]
+    GLUE --> ATHENA[Athena queries]
+
+    subgraph onfail[" "]
+        FAIL[Any task fails] --> SLACK2[/Slack: OPS ALERT/]
+    end
+```
+
+- **Orchestration:** Airflow (TaskFlow API, Airflow 3) schedules and runs ingestion, validation,
+  archival, stats, and upload as separate tasks with their own retry policies.
+- **Storage:** Raw/processed CSVs are kept locally for debugging; S3 uploads are Parquet, partitioned
+  by `dt=YYYY-MM-DD/hour=HH/`, queryable via Athena over the Glue Catalog table Terraform manages.
+- **Alerting:** two distinct Slack alert types - see [Observability](#observability) below.
 
 ## Objectives
 
@@ -37,47 +64,76 @@ This project addresses these challenges by designing a production-style pipeline
 
 ## Pipeline Workflow (Airflow DAG: `bitcoin_data_pipeline`)
 
-The pipeline is implemented as an Airflow DAG with clear task boundaries to support retries, monitoring, and modular extensibility.
+The pipeline is implemented as an Airflow DAG (TaskFlow API) with nine tasks, each with its own
+retry policy, to support retries, monitoring, and modular extensibility.
 
-| Step | Task ID                        | Description                                                                                             |
-| ---- | ------------------------------ | ------------------------------------------------------------------------------------------------------- |
-| 1    | `fetch_and_save_bitcoin_price` | Fetch price from CoinGecko, detect anomalies, send Slack alerts, archive raw snapshot, upload raw to S3 |
-| 2    | `compute_moving_average`       | Compute moving average & std dev, save processed file, upload to S3                                     |
-| 3    | `upload_processed_csv_to_s3`   | Optional redundant upload of processed file (manually callable)                                         |
+| Task ID                   | Description                                                              |
+| -------------------------- | ------------------------------------------------------------------------ |
+| `fetch_price`               | Fetch price from CoinGecko (retried with backoff), validated via pydantic |
+| `evaluate_and_alert`        | Detect 1h/24h anomalies beyond threshold, send `[PRICE ANOMALY]` Slack alert |
+| `append_raw_csv`            | Append the fetched record to the raw CSV                                 |
+| `archive_raw_snapshot`      | Copy the raw CSV to a timestamped snapshot file                          |
+| `upload_archive_to_s3`      | Convert the snapshot to Parquet, upload to a partitioned `archive/` key  |
+| `upload_raw_to_s3`          | Convert the raw CSV to Parquet, upload to a partitioned `raw/` key       |
+| `run_quality_checks`        | Pandera schema + timestamp-gap validation; fails the run on bad data     |
+| `compute_rolling_stats`     | Compute rolling mean/std over `price_usd`, save the processed CSV        |
+| `upload_processed_to_s3`    | Convert processed CSV to Parquet, upload to a partitioned `processed/` key |
+
+Any task failure triggers a distinct `[OPS ALERT]` Slack message via `on_failure_callback`.
 
 
 ## Data Outputs
 
-The pipeline produces versioned artifacts locally (via Docker volume mounts) and optionally syncs them to AWS S3:
+The pipeline produces versioned artifacts locally (via Docker volume mounts) as CSV, and syncs
+Parquet copies to AWS S3, partitioned by `dt=YYYY-MM-DD/hour=HH/` (when credentials are configured):
 
-- **Raw append log:** `data/bitcoin_raw.csv` — continuously appended API pulls (timestamped).
-- **Snapshot archive:** `data/archive/<timestamp>.csv` — immutable raw snapshots for auditability and replay.
-- **Processed features:** `data/bitcoin_processed.csv` — rolling mean and standard deviation for monitoring/anomaly detection.
-- **Cloud storage:** Raw and processed artifacts uploaded to **AWS S3** (when credentials are configured).
+- **Raw append log:** `data/bitcoin_raw.csv` (local) → `s3://<bucket>/raw/dt=.../hour=.../bitcoin_raw.parquet`
+- **Snapshot archive:** `data/archive/<timestamp>.csv` (local) → `s3://<bucket>/archive/dt=.../hour=.../<timestamp>.parquet`
+- **Processed features:** `data/bitcoin_processed.csv` (local, rolling mean/std) → `s3://<bucket>/processed/dt=.../hour=.../bitcoin_processed.parquet`
+- **Queryable via Athena** over the Glue Catalog table Terraform manages (see
+  [Infrastructure as Code](#infrastructure-as-code-terraform)).
 
 ## Tech Stack
 
-- **Orchestration:** Apache Airflow
+- **Orchestration:** Apache Airflow 3 (TaskFlow API)
 - **Containerization:** Docker, Docker Compose
 - **Data Source:** CoinGecko API
-- **Storage:** Local CSV + AWS S3
+- **Storage:** Local CSV + Parquet on S3, queried via Athena/Glue Catalog
+- **Data quality:** Pandera
+- **Resilience:** pydantic (response validation), tenacity (retry/backoff)
 - **Alerts:** Slack Webhooks
+- **Secrets:** AWS Secrets Manager (Airflow SecretsManagerBackend)
+- **Infrastructure as Code:** Terraform
+- **CI/CD:** GitHub Actions
 - **Language:** Python
 - **Metadata DB:** PostgreSQL (Airflow backend)
 
 
 ##  Quickstart
 
-### 1. Start Airflow Docker Environment
+### 1. Configure environment variables
 
 ```bash
-docker-compose up --build
+cp .env.example .env
+```
+
+Fill in `.env` - at minimum, generate a Fernet key, an API secret key, and a JWT secret (a Python
+`secrets.token_hex(24)` or similar works for the latter two), and set a Postgres password. Everything
+else (Slack webhook, CoinGecko key, AWS credentials) can be left blank to start; the pipeline runs
+fine without them, it just won't send alerts or upload to S3 yet. `.env` is gitignored - never commit it.
+
+### 2. Start the Airflow environment
+
+```bash
+docker compose up --build
 ```
 
 Wait for containers to initialize, especially `airflow-init` (runs DB migration and creates the
-admin user) and `airflow-api-server`.
+admin user) and `airflow-api-server`. This builds the image from the repo's `Dockerfile`, which
+bakes in the `bitcoin_pipeline` package - after any code change, `docker compose up --build` again
+to pick it up (it's not bind-mounted for live-reload).
 
-### 2. Access Airflow UI
+### 3. Access Airflow UI
 
 * Go to: [http://localhost:8080](http://localhost:8080)
 * Login with the username from `AIRFLOW_ADMIN_USERNAME` in your `.env` (default `admin`) and its
@@ -100,42 +156,40 @@ After execution:
 ```plaintext
 .
 ├── dags/
-│   └── bitcoin_dag.py            # Airflow DAG: defines fetch, process, upload
-├── bitcoin_utils.py              # All utility logic for fetch, alerts, archive, S3
-├── airflow.API.ipynb             # Demonstrates the API interaction logic
-├── airflow.API.md                # Markdown explanation of how the API works
-├── airflow.example.ipynb         # Notebook running full pipeline sequence
-├── airflow.example.md            # Explains pipeline implementation and design
-├── data/                         # Volume mount for raw/processed/snapshot CSVs
-├── Dockerfile                    # Optional custom build 
-├── requirements.txt              # Python dependencies
-├── docker-compose.yaml           # Brings up Airflow, Postgres, volumes
+│   └── bitcoin_dag.py            # Airflow DAG (TaskFlow API): 9-task graph
+├── bitcoin_pipeline/              # The package the DAG imports
+│   ├── fetch.py                   # CoinGecko client + retry + pydantic validation
+│   ├── alerts.py                  # Slack: price-anomaly + ops-failure alerts
+│   ├── storage.py                 # CSV/Parquet I/O, S3 upload, archival
+│   └── quality.py                 # Pandera schema + data-quality checks
+├── tests/
+│   ├── unit/                      # Mocked (responses/moto), no network/AWS
+│   └── dags/                      # DAG integrity checks (needs Airflow installed)
+├── infra/terraform/                # S3, IAM, Secrets Manager, Glue Catalog
+├── .github/workflows/              # ci.yml, deploy.yml, terraform.yml
+├── airflow.API.ipynb              # Demonstrates the API interaction logic
+├── airflow.API.md                 # Markdown explanation of how the API works
+├── airflow.example.ipynb          # Notebook running full pipeline sequence
+├── airflow.example.md             # Explains pipeline implementation and design
+├── data/                          # Volume mount for raw/processed/snapshot CSVs
+├── Dockerfile                     # Builds the Airflow image w/ bitcoin_pipeline baked in
+├── pyproject.toml                 # Package metadata, pinned deps, ruff/black/pytest config
+├── requirements.txt               # Runtime deps installed into the Airflow image
+├── docker-compose.yaml            # Brings up Airflow (4 services), Postgres, volumes
+├── docker_bash.sh                 # Shell into the api-server container (needs WSL2/Git Bash on Windows)
+└── .env.example                   # Template for your local .env (never commit .env)
 ````
 
 ##  Configuration
 
-### Environment Variables
+All configuration is via the `.env` file (see Quickstart step 1) - `docker-compose.yaml` reads it
+automatically for every service via Compose's built-in `.env` substitution; there's nothing extra
+to wire up. See `.env.example` for the full list with comments. A few worth calling out:
 
-These are automatically used in your Docker container:
-
-```bash
-BITCOIN_RAW_PATH=/opt/airflow/data/bitcoin_raw.csv
-BITCOIN_PROCESSED_PATH=/opt/airflow/data/bitcoin_processed.csv
-BITCOIN_ARCHIVE_PATH=/opt/airflow/data/archive
-```
-
-To use Slack alerts:
-
-```bash
-export SLACK_WEBHOOK_URL="https://hooks.slack.com/services/..."
-```
-
-###  Environment Variables with `.env` File
-
-To avoid exposing secrets (like Slack webhooks or AWS credentials) in your code or version
-control, define them in a `.env` file in the project root — copy `.env.example` to `.env` and fill
-in real values. `docker-compose.yaml` already reads it automatically (Compose's built-in `.env`
-substitution) for every service; there's nothing extra to wire up.
+- `BITCOIN_RAW_PATH` / `BITCOIN_PROCESSED_PATH` / `BITCOIN_ARCHIVE_PATH` - override the in-container
+  data file locations. Optional; sensible defaults are baked into `bitcoin_pipeline.storage`.
+- `SLACK_WEBHOOK_URL` - enables both alert types (see Observability). Leave blank to disable alerting.
+- `BITCOIN_PIPELINE_SKIP_S3` - skip S3 uploads entirely. Used by CI's smoke test; leave unset for normal use.
 
 
 ##  AWS S3 Access
