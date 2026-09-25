@@ -1,0 +1,9 @@
+# Copy to terraform.tfvars (gitignored) and fill in real values.
+
+aws_region     = "us-east-1"
+project_name   = "bitcoin-pipeline"
+environment    = "dev"
+
+# Must be globally unique across all of S3, and must match BITCOIN_S3_BUCKET
+# in your .env so the pipeline uploads to the bucket this module manages.
+s3_bucket_name = "REPLACE-WITH-A-GLOBALLY-UNIQUE-BUCKET-NAME"

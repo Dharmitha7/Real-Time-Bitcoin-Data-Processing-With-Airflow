@@ -207,6 +207,53 @@ secrets:
 Until those are added, `deploy.yml` will fail at the "Write .env" step with empty values - `ci.yml`
 does not need any secrets and works as soon as it's pushed.
 
+## Infrastructure as Code (Terraform)
+
+`infra/terraform/` defines the AWS resources the pipeline needs: the S3 bucket (versioned,
+encrypted, lifecycle rules), a least-privilege IAM policy, the two Secrets Manager entries, and a
+Glue Catalog table over the partitioned `processed/` data for Athena. **`terraform apply` is never
+run automatically** - `.github/workflows/terraform.yml` only runs `fmt`/`validate`/`plan` on PRs
+touching `infra/terraform/**` (commenting the plan on the PR); an actual `apply` requires a manual
+`workflow_dispatch` gated by a GitHub Environment called `production` with required reviewers,
+which you set up once in Settings → Environments.
+
+**One-time state-backend bootstrap** (run these yourself with your AWS profile - Terraform can't
+manage the bucket it stores its own state in):
+
+```bash
+aws s3api create-bucket --bucket <your-unique-tfstate-bucket> --region us-east-1 --profile bitcoin-pipeline
+aws s3api put-bucket-versioning --bucket <your-unique-tfstate-bucket> --versioning-configuration Status=Enabled --profile bitcoin-pipeline
+aws s3api put-public-access-block --bucket <your-unique-tfstate-bucket> --public-access-block-configuration BlockPublicAcls=true,IgnorePublicAcls=true,BlockPublicPolicy=true,RestrictPublicBuckets=true --profile bitcoin-pipeline
+aws dynamodb create-table --table-name terraform-locks --attribute-definitions AttributeName=LockID,AttributeType=S --key-schema AttributeName=LockID,KeyType=HASH --billing-mode PAY_PER_REQUEST --profile bitcoin-pipeline
+```
+
+Then locally:
+
+```bash
+cd infra/terraform
+cp backend.hcl.example backend.hcl        # fill in your bootstrapped bucket name
+cp terraform.tfvars.example terraform.tfvars   # fill in a globally-unique s3_bucket_name
+terraform init -backend-config=backend.hcl
+terraform plan     # review carefully before ever applying
+```
+
+Since Phase 3's secrets were created by hand via the AWS CLI (before Terraform existed), import
+them into state instead of letting Terraform try to recreate them:
+
+```bash
+terraform import aws_secretsmanager_secret.slack_webhook airflow/variables/slack_webhook_url
+terraform import aws_secretsmanager_secret.coingecko_api_key airflow/variables/coingecko_api_key
+```
+
+After applying (manually, or via the approved `workflow_dispatch` apply job), Athena won't see any
+partitions yet - the Glue table's partition metadata is only populated by a crawler or an explicit
+`MSCK REPAIR TABLE bitcoin_processed` / `ALTER TABLE ... ADD PARTITION` once data actually exists
+under `processed/dt=.../hour=.../`.
+
+For CI's `fmt-validate-plan`/`apply` jobs, add these repo secrets too (use a CI-scoped IAM
+credential, not your personal profile): `TF_AWS_ACCESS_KEY_ID`, `TF_AWS_SECRET_ACCESS_KEY`,
+`TF_STATE_BUCKET`, `TF_STATE_REGION`, `TF_STATE_LOCK_TABLE`, `TF_S3_BUCKET_NAME`.
+
 ## Limitations & Next Steps
 
 **Limitations**
@@ -215,10 +262,10 @@ does not need any secrets and works as soon as it's pushed.
 - Anomaly detection is based on rolling statistics and threshold rules.
 
 **Next Steps**
-- Partition S3 outputs by time (e.g., `date=YYYY-MM-DD/hour=HH/`) for scalable retention.
-- Add schema and data quality validation (e.g., Great Expectations).
-- Persist processed outputs to a database or warehouse for analytics use.
-- Extend monitoring and alerting for task failures and data quality issues.
+- Persist processed outputs to a database or warehouse for analytics use, beyond Athena-over-S3.
+- Wire up the StatsD → Grafana dashboard described in Observability above.
+- Managed deployment (MWAA/Composer/Astronomer) for a live demo, instead of running locally - out
+  of scope for this pass; costs real money to keep running.
 
 ##  References
 
