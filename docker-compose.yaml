@@ -12,6 +12,8 @@ x-airflow-common-env: &airflow-common-env
   AIRFLOW__CORE__DAGS_FOLDER: /opt/airflow/dags
   AIRFLOW__CORE__LOAD_EXAMPLES: "False"
   SLACK_WEBHOOK_URL: ${SLACK_WEBHOOK_URL}
+  COINGECKO_API_KEY: ${COINGECKO_API_KEY:-}
+  BITCOIN_S3_BUCKET: ${BITCOIN_S3_BUCKET}
   # Read Airflow Connections/Variables from AWS Secrets Manager instead of
   # (or in addition to) the metastore. Falls through to other backends if a
   # given key isn't found there, so this is safe to enable before any secrets
@@ -28,7 +30,6 @@ x-airflow-common-env: &airflow-common-env
 x-airflow-common-volumes: &airflow-common-volumes
   - ./dags:/opt/airflow/dags
   - ./data:/opt/airflow/data
-  - ./bitcoin_utils.py:/opt/airflow/bitcoin_utils.py
 
 services:
   postgres:

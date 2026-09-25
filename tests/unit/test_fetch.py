@@ -4,7 +4,7 @@ import pytest
 import responses
 from pydantic import ValidationError
 
-import bitcoin_utils
+from bitcoin_pipeline import fetch
 
 COINGECKO_URL_BASE = "https://api.coingecko.com/api/v3/simple/price"
 
@@ -24,7 +24,7 @@ def test_fetch_bitcoin_price_success():
         status=200,
     )
 
-    result = bitcoin_utils.fetch_bitcoin_price()
+    result = fetch.fetch_bitcoin_price()
 
     assert result["price_usd"] == 50000.0
     assert result["change_1h"] == 0.5
@@ -42,7 +42,7 @@ def test_fetch_bitcoin_price_retries_then_succeeds():
         status=200,
     )
 
-    result = bitcoin_utils.fetch_bitcoin_price()
+    result = fetch.fetch_bitcoin_price()
 
     assert result["price_usd"] == 51000.0
     assert len(responses.calls) == 2
@@ -53,7 +53,7 @@ def test_fetch_bitcoin_price_malformed_payload_raises():
     responses.add(responses.GET, COINGECKO_URL_BASE, json={"unexpected": "shape"}, status=200)
 
     with pytest.raises(ValidationError):
-        bitcoin_utils.fetch_bitcoin_price()
+        fetch.fetch_bitcoin_price()
 
 
 @responses.activate
@@ -62,7 +62,7 @@ def test_fetch_bitcoin_price_exhausts_retries_on_persistent_5xx():
         responses.add(responses.GET, COINGECKO_URL_BASE, status=500)
 
     with pytest.raises(Exception):
-        bitcoin_utils.fetch_bitcoin_price()
+        fetch.fetch_bitcoin_price()
 
     assert len(responses.calls) == 5
 
@@ -76,6 +76,6 @@ def test_fetch_bitcoin_price_sends_api_key_header():
         status=200,
     )
 
-    bitcoin_utils.fetch_bitcoin_price(api_key="demo-key-123")
+    fetch.fetch_bitcoin_price(api_key="demo-key-123")
 
     assert responses.calls[0].request.headers["x-cg-demo-api-key"] == "demo-key-123"

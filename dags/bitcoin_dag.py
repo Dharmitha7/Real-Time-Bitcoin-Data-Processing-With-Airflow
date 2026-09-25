@@ -1,16 +1,15 @@
 """
 Airflow DAG to automate real-time Bitcoin data ingestion, anomaly detection with Slack alerts,
-rolling statistics computation, and S3 uploads using bitcoin_utils.py.
+data-quality checks, rolling statistics computation, archival, and S3 uploads using the
+bitcoin_pipeline package.
 """
 
-import sys
 from datetime import timedelta
 
 import pendulum
 from airflow.sdk import dag, task
 
-sys.path.append("/opt/airflow")
-from bitcoin_utils import compute_moving_average, save_price_to_csv, upload_to_s3
+from bitcoin_pipeline import alerts, fetch, quality, storage
 
 default_args = {
     "owner": "data-engineering",
@@ -22,7 +21,7 @@ default_args = {
 
 @dag(
     dag_id="bitcoin_data_pipeline",
-    description="ETL DAG: Ingest, compute stats, archive, and upload Bitcoin data with Slack alerts",
+    description="ETL DAG: ingest, validate, compute stats, archive, alert, and upload Bitcoin data",
     default_args=default_args,
     schedule="@hourly",
     start_date=pendulum.datetime(2025, 5, 1, tz="UTC"),
@@ -31,25 +30,59 @@ default_args = {
     tags=["bitcoin", "etl", "stats", "s3", "slack", "archival"],
 )
 def bitcoin_data_pipeline():
-    # Task 1: Fetch and Save Bitcoin Price (includes anomaly detection, Slack alert, S3 upload)
-    @task(task_id="fetch_and_save_bitcoin_price")
-    def fetch_and_save_bitcoin_price():
-        save_price_to_csv()
+    @task(task_id="fetch_price")
+    def fetch_price_task() -> dict:
+        return fetch.fetch_bitcoin_price()
 
-    # Task 2: Compute rolling statistics and update processed data + S3 upload
-    @task(task_id="compute_moving_average")
-    def compute_moving_average_task():
-        compute_moving_average()
+    @task(task_id="evaluate_and_alert")
+    def evaluate_and_alert_task(record: dict) -> None:
+        alerts.evaluate_and_alert(record)
 
-    # Redundant uploader task if needed independently
-    @task(task_id="upload_processed_csv_to_s3")
-    def upload_processed_csv_to_s3():
-        upload_to_s3(
-            bucket_name="bitcoin-price-store",
-            key_path="processed/bitcoin_processed.csv",
+    @task(task_id="append_raw_csv")
+    def append_raw_csv_task(record: dict) -> str:
+        return storage.append_raw_record(record)
+
+    @task(task_id="archive_raw_snapshot")
+    def archive_raw_snapshot_task(raw_path: str) -> str:
+        return storage.archive_raw_snapshot(raw_path)
+
+    @task(task_id="upload_archive_to_s3")
+    def upload_archive_to_s3_task(archive_path: str) -> None:
+        filename = archive_path.rsplit("/", 1)[-1]
+        storage.upload_to_s3(archive_path, storage.default_bucket(), f"archive/{filename}")
+
+    @task(task_id="upload_raw_to_s3")
+    def upload_raw_to_s3_task(raw_path: str) -> None:
+        storage.upload_to_s3(raw_path, storage.default_bucket(), "raw/bitcoin_raw.csv")
+
+    @task(task_id="run_quality_checks")
+    def run_quality_checks_task(raw_path: str) -> str:
+        quality.run_quality_checks(raw_path)
+        return raw_path
+
+    @task(task_id="compute_rolling_stats")
+    def compute_rolling_stats_task(raw_path: str) -> str:
+        return storage.compute_rolling_stats(raw_path)
+
+    @task(task_id="upload_processed_to_s3")
+    def upload_processed_to_s3_task(processed_path: str) -> None:
+        storage.upload_to_s3(
+            processed_path, storage.default_bucket(), "processed/bitcoin_processed.csv"
         )
 
-    fetch_and_save_bitcoin_price() >> compute_moving_average_task() >> upload_processed_csv_to_s3()
+    price_record = fetch_price_task()
+    raw_path = append_raw_csv_task(price_record)
+
+    evaluate_and_alert_task(price_record)
+
+    archive_path = archive_raw_snapshot_task(raw_path)
+    upload_archive_to_s3_task(archive_path)
+
+    upload_raw_to_s3_task(raw_path)
+
+    checked_path = run_quality_checks_task(raw_path)
+    processed_path = compute_rolling_stats_task(checked_path)
+    upload_processed_to_s3_task(processed_path)
 
 
 bitcoin_data_pipeline()
