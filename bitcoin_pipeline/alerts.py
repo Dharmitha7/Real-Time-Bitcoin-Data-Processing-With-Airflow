@@ -54,8 +54,15 @@ def dag_failure_slack_callback(context: dict) -> None:
     means "the pipeline stopped working".
     """
     ti = context["task_instance"]
+    reason = str(context.get("exception") or "").strip()
+    if len(reason) > 500:
+        reason = reason[:500] + "... (truncated)"
+
     message = (
         f"[OPS ALERT] Task '{ti.task_id}' in DAG '{ti.dag_id}' failed "
         f"(run {context.get('run_id')})."
     )
+    if reason:
+        message += f"\nReason: {reason}"
+
     send_slack_alert(message)

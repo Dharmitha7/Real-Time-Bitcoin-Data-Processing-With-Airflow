@@ -59,10 +59,33 @@ def test_dag_failure_slack_callback_sends_ops_alert(monkeypatch):
         dag_id = "bitcoin_data_pipeline"
 
     alerts.dag_failure_slack_callback(
-        {"task_instance": FakeTaskInstance(), "run_id": "manual__2026-01-01T00:00:00+00:00"}
+        {
+            "task_instance": FakeTaskInstance(),
+            "run_id": "manual__2026-01-01T00:00:00+00:00",
+            "exception": ValueError("Unable to locate credentials"),
+        }
     )
 
     sent_body = json.loads(responses.calls[0].request.body)
     assert sent_body["text"].startswith("[OPS ALERT]")
     assert "upload_raw_to_s3" in sent_body["text"]
     assert "bitcoin_data_pipeline" in sent_body["text"]
+    assert "Unable to locate credentials" in sent_body["text"]
+
+
+@responses.activate
+def test_dag_failure_slack_callback_handles_missing_exception(monkeypatch):
+    monkeypatch.setenv("SLACK_WEBHOOK_URL", WEBHOOK_URL)
+    responses.add(responses.POST, WEBHOOK_URL, status=200)
+
+    class FakeTaskInstance:
+        task_id = "fetch_price"
+        dag_id = "bitcoin_data_pipeline"
+
+    alerts.dag_failure_slack_callback(
+        {"task_instance": FakeTaskInstance(), "run_id": "manual__2026-01-01T00:00:00+00:00"}
+    )
+
+    sent_body = json.loads(responses.calls[0].request.body)
+    assert sent_body["text"].startswith("[OPS ALERT]")
+    assert "Reason:" not in sent_body["text"]
