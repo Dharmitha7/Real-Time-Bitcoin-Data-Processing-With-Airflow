@@ -80,22 +80,27 @@ jobs:
       - name: Trigger the DAG and wait for it to finish
         run: |
           docker compose exec -T airflow-scheduler airflow dags unpause bitcoin_data_pipeline
+          docker compose exec -T airflow-scheduler airflow dags trigger bitcoin_data_pipeline
 
-          # `-o json` output from `docker compose exec -T` can have stray
-          # text mixed into stdout, so pull out just the JSON array/object
-          # before decoding instead of assuming stdout is pure JSON.
-          extract_json() {
-            python3 -c "import sys, re, json; s = sys.stdin.read(); print(re.search(r'[\[{].*[\]}]', s, re.S).group(0))"
-          }
-
-          run_id=$(docker compose exec -T airflow-scheduler airflow dags trigger bitcoin_data_pipeline -o json \
-            | extract_json | python3 -c "import sys, json; print(json.load(sys.stdin)[0]['dag_run_id'])")
-          echo "Triggered run: $run_id"
-
+          # The CI stack is always fresh (new DB each run), so there is only
+          # ever one DAG run to watch - no need to parse a run_id out of
+          # `dags trigger`'s output (which has proven unreliable to parse as
+          # JSON through docker compose exec). Poll `list-runs` instead and
+          # take the most recent entry. Raw output is echoed each loop so a
+          # parsing failure is visible directly in the log.
           state="queued"
           for i in $(seq 1 30); do
-            state=$(docker compose exec -T airflow-scheduler airflow dags list-runs bitcoin_data_pipeline -o json \
-              | extract_json | python3 -c "import sys, json; runs=json.load(sys.stdin); print(next(r['state'] for r in runs if r['run_id']=='$run_id'))")
+            raw=$(docker compose exec -T airflow-scheduler airflow dags list-runs -d bitcoin_data_pipeline -o json)
+            echo "--- list-runs raw output ---"
+            echo "$raw"
+            echo "----------------------------"
+            state=$(echo "$raw" | python3 -c "
+import sys, json, re
+raw = sys.stdin.read()
+match = re.search(r'\[.*\]', raw, re.S)
+runs = json.loads(match.group(0)) if match else []
+print(runs[-1]['state'] if runs else 'unknown')
+")
             echo "DAG run state: $state"
             if [ "$state" = "success" ] || [ "$state" = "failed" ]; then
               break
