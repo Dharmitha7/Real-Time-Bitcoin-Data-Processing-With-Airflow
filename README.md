@@ -167,16 +167,10 @@ After execution:
 │   └── dags/                      # DAG integrity checks (needs Airflow installed)
 ├── infra/terraform/                # S3, IAM, Secrets Manager, Glue Catalog
 ├── .github/workflows/              # ci.yml, deploy.yml, terraform.yml
-├── airflow.API.ipynb              # Demonstrates the API interaction logic
-├── airflow.API.md                 # Markdown explanation of how the API works
-├── airflow.example.ipynb          # Notebook running full pipeline sequence
-├── airflow.example.md             # Explains pipeline implementation and design
 ├── data/                          # Volume mount for raw/processed/snapshot CSVs
-├── Dockerfile                     # Builds the Airflow image w/ bitcoin_pipeline baked in
+├── Dockerfile                     # Builds the Airflow image, installing bitcoin_pipeline from pyproject.toml
 ├── pyproject.toml                 # Package metadata, pinned deps, ruff/black/pytest config
-├── requirements.txt               # Runtime deps installed into the Airflow image
 ├── docker-compose.yaml            # Brings up Airflow (4 services), Postgres, volumes
-├── docker_bash.sh                 # Shell into the api-server container (needs WSL2/Git Bash on Windows)
 └── .env.example                   # Template for your local .env (never commit .env)
 ````
 
@@ -217,11 +211,6 @@ aws secretsmanager create-secret \
 |----------------------------------------------------|-----------------------------------------------------------------------------|
 | [`bitcoin_pipeline/`](./bitcoin_pipeline)          | Package: fetch (CoinGecko + retries), alerts (Slack), storage (CSV/S3), quality (Pandera checks) |
 | [`bitcoin_dag.py`](./dags/bitcoin_dag.py)          | Apache Airflow DAG that orchestrates the full ETL pipeline                 |
-| [`airflow.API.ipynb`](./airflow.API.ipynb)         | Tool demonstration notebook — showcases how utility functions behave       |
-| [`airflow.API.md`](./airflow.API.md)               | Explains each utility function's internal logic and expected behavior      |
-| [`airflow.example.ipynb`](./airflow.example.ipynb) | Full project demo notebook — simulates the entire DAG workflow manually    |
-| [`airflow.example.md`](./airflow.example.md)       | Describes the step-by-step pipeline execution and design rationale         |
-
 
 ## Observability
 

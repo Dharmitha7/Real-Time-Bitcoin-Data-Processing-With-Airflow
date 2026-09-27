@@ -6,15 +6,11 @@ TEST_BUCKET = "test-bitcoin-bucket"
 
 
 @pytest.fixture
-def aws_credentials(monkeypatch):
+def s3_bucket(monkeypatch):
     monkeypatch.setenv("AWS_ACCESS_KEY_ID", "testing")
     monkeypatch.setenv("AWS_SECRET_ACCESS_KEY", "testing")
     monkeypatch.setenv("AWS_SESSION_TOKEN", "testing")
     monkeypatch.setenv("AWS_DEFAULT_REGION", "us-east-1")
-
-
-@pytest.fixture
-def s3_bucket(aws_credentials):
     with mock_aws():
         s3 = boto3.client("s3", region_name="us-east-1")
         s3.create_bucket(Bucket=TEST_BUCKET)
