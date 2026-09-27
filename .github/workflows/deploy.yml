@@ -94,13 +94,7 @@ jobs:
             echo "--- list-runs raw output ---"
             echo "$raw"
             echo "----------------------------"
-            state=$(echo "$raw" | python3 -c "
-import sys, json, re
-raw = sys.stdin.read()
-match = re.search(r'\[.*\]', raw, re.S)
-runs = json.loads(match.group(0)) if match else []
-print(runs[-1]['state'] if runs else 'unknown')
-")
+            state=$(echo "$raw" | python3 -c "import sys, json, re; raw = sys.stdin.read(); match = re.search(r'\[.*\]', raw, re.S); runs = json.loads(match.group(0)) if match else []; print(runs[-1]['state'] if runs else 'unknown')")
             echo "DAG run state: $state"
             if [ "$state" = "success" ] || [ "$state" = "failed" ]; then
               break
