@@ -81,14 +81,21 @@ jobs:
         run: |
           docker compose exec -T airflow-scheduler airflow dags unpause bitcoin_data_pipeline
 
+          # `-o json` output from `docker compose exec -T` can have stray
+          # text mixed into stdout, so pull out just the JSON array/object
+          # before decoding instead of assuming stdout is pure JSON.
+          extract_json() {
+            python3 -c "import sys, re, json; s = sys.stdin.read(); print(re.search(r'[\[{].*[\]}]', s, re.S).group(0))"
+          }
+
           run_id=$(docker compose exec -T airflow-scheduler airflow dags trigger bitcoin_data_pipeline -o json \
-            | python3 -c "import sys, json; print(json.load(sys.stdin)[0]['dag_run_id'])")
+            | extract_json | python3 -c "import sys, json; print(json.load(sys.stdin)[0]['dag_run_id'])")
           echo "Triggered run: $run_id"
 
           state="queued"
           for i in $(seq 1 30); do
             state=$(docker compose exec -T airflow-scheduler airflow dags list-runs bitcoin_data_pipeline -o json \
-              | python3 -c "import sys, json; runs=json.load(sys.stdin); print(next(r['state'] for r in runs if r['run_id']=='$run_id'))")
+              | extract_json | python3 -c "import sys, json; runs=json.load(sys.stdin); print(next(r['state'] for r in runs if r['run_id']=='$run_id'))")
             echo "DAG run state: $state"
             if [ "$state" = "success" ] || [ "$state" = "failed" ]; then
               break
