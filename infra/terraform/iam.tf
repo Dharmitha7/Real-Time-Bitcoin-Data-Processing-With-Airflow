@@ -28,18 +28,6 @@ data "aws_iam_policy_document" "bitcoin_pipeline" {
   }
 
   statement {
-    sid    = "ReadPipelineSecrets"
-    effect = "Allow"
-    actions = [
-      "secretsmanager:GetSecretValue",
-    ]
-    resources = [
-      aws_secretsmanager_secret.slack_webhook.arn,
-      aws_secretsmanager_secret.coingecko_api_key.arn,
-    ]
-  }
-
-  statement {
     sid    = "GlueReadWriteCatalog"
     effect = "Allow"
     actions = [
@@ -58,6 +46,6 @@ data "aws_iam_policy_document" "bitcoin_pipeline" {
 
 resource "aws_iam_policy" "bitcoin_pipeline" {
   name        = "${var.project_name}-${var.environment}-policy"
-  description = "Least-privilege access for the Bitcoin pipeline: its own S3 bucket, its two secrets, its Glue catalog entries."
+  description = "Least-privilege access for the Bitcoin pipeline: its own S3 bucket and its Glue catalog entries."
   policy      = data.aws_iam_policy_document.bitcoin_pipeline.json
 }

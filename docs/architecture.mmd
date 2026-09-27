@@ -1,0 +1,23 @@
+flowchart LR
+    CG[CoinGecko API] --> FETCH[fetch_price]
+    FETCH --> ALERT[evaluate_and_alert]
+    ALERT --> SLACK1[/Slack: PRICE ANOMALY/]
+    FETCH --> APPEND[append_raw_csv]
+
+    APPEND --> ARCHIVE[archive_raw_snapshot]
+    ARCHIVE --> UPARCH[upload_archive_to_s3]
+    UPARCH --> S3ARCH[(S3: archive/)]
+
+    APPEND --> UPRAW[upload_raw_to_s3]
+    UPRAW --> S3RAW[(S3: raw/, partitioned)]
+
+    APPEND --> QUALITY[run_quality_checks]
+    QUALITY --> STATS[compute_rolling_stats]
+    STATS --> UPPROC[upload_processed_to_s3]
+    UPPROC --> S3PROC[(S3: processed/, partitioned)]
+    S3PROC --> GLUE[Glue Catalog]
+    GLUE --> ATHENA[Athena queries]
+
+    subgraph onfail[" "]
+        FAIL[Any task fails] --> SLACK2[/Slack: OPS ALERT/]
+    end

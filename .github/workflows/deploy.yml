@@ -6,7 +6,10 @@ on:
   workflow_dispatch:
 
 env:
-  IMAGE_NAME: ghcr.io/${{ github.repository }}
+  # Docker/GHCR image names must be all-lowercase; github.repository preserves
+  # this repo's actual mixed case (Dharmitha7/Real-Time-...), which fails the
+  # build-push-action's tag validation. Hardcoded lowercase instead.
+  IMAGE_NAME: ghcr.io/dharmitha7/real-time-bitcoin-data-processing-with-airflow
 
 jobs:
   build-and-push:
