@@ -80,21 +80,22 @@ jobs:
       - name: Trigger the DAG and wait for it to finish
         run: |
           docker compose exec -T airflow-scheduler airflow dags unpause bitcoin_data_pipeline
-          docker compose exec -T airflow-scheduler airflow dags trigger bitcoin_data_pipeline
 
-          # The CI stack is always fresh (new DB each run), so there is only
-          # ever one DAG run to watch - no need to parse a run_id out of
-          # `dags trigger`'s output (which has proven unreliable to parse as
-          # JSON through docker compose exec). Poll `list-runs` instead and
-          # take the most recent entry. Raw output is echoed each loop so a
-          # parsing failure is visible directly in the log.
+          # Unpausing can also let the scheduler kick off its own
+          # auto-scheduled run alongside this manual one, so we must track
+          # OUR run_id specifically rather than assume there's only one run.
+          # `dags trigger` doesn't give clean JSON through docker compose
+          # exec, but its plain-text log line always ends with `run_id=...`,
+          # so pull it out of there instead.
+          trigger_output=$(docker compose exec -T airflow-scheduler airflow dags trigger bitcoin_data_pipeline)
+          echo "$trigger_output"
+          run_id=$(echo "$trigger_output" | grep -oP 'run_id=\K\S+')
+          echo "Triggered run: $run_id"
+
           state="queued"
           for i in $(seq 1 30); do
-            raw=$(docker compose exec -T airflow-scheduler airflow dags list-runs -d bitcoin_data_pipeline -o json)
-            echo "--- list-runs raw output ---"
-            echo "$raw"
-            echo "----------------------------"
-            state=$(echo "$raw" | python3 -c "import sys, json, re; raw = sys.stdin.read(); match = re.search(r'\[.*\]', raw, re.S); runs = json.loads(match.group(0)) if match else []; print(runs[-1]['state'] if runs else 'unknown')")
+            raw=$(docker compose exec -T airflow-scheduler airflow dags list-runs bitcoin_data_pipeline -o json)
+            state=$(echo "$raw" | python3 -c "import sys, json; runs = json.load(sys.stdin); match = [r for r in runs if r['run_id'] == '$run_id']; print(match[0]['state'] if match else 'unknown')")
             echo "DAG run state: $state"
             if [ "$state" = "success" ] || [ "$state" = "failed" ]; then
               break
