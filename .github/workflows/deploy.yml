@@ -61,6 +61,13 @@ jobs:
         # secrets. Skipping S3 uploads means no AWS credentials are needed
         # here at all; see README for adding them once ready.
 
+      - name: Make the bind-mounted data dir writable by the container
+        # actions/checkout creates ./data owned by the runner user; the
+        # Airflow container runs as a different uid and has no write
+        # permission on that bind mount otherwise, causing a PermissionError
+        # the first time a task writes to /opt/airflow/data.
+        run: mkdir -p data/archive && chmod -R 777 data
+
       - name: Bring up the stack
         run: docker compose up -d --build
 
